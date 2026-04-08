@@ -85,11 +85,6 @@
 
       .password-row {
         margin-bottom: 1rem;
-        display: none;
-      }
-
-      .password-row.visible {
-        display: block;
       }
 
       .password-row label {
@@ -177,11 +172,6 @@
         margin-bottom: 1rem;
         font-size: 0.8rem;
         line-height: 1.6;
-        display: none;
-      }
-
-      .encryption-info.visible {
-        display: block;
       }
 
       .encryption-info .label {
@@ -243,17 +233,11 @@
         id="file-input"
       />
 
-      <div class="encryption-info" id="encryption-info"></div>
+      <div class="encryption-info" id="encryption-info" hidden></div>
 
-      <div class="password-row">
-        <label for="password"
-          >Password <span style="opacity: 0.7">(if required)</span></label
-        >
-        <input
-          type="password"
-          id="password"
-          placeholder="Leave empty if not needed"
-        />
+      <div class="password-row" hidden>
+        <label for="password">Password</label>
+        <input type="password" id="password" />
       </div>
 
       <button class="btn btn-primary" id="unlock-btn" disabled>Unlock</button>
