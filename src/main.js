@@ -8,6 +8,7 @@ const unlockBtn = document.getElementById("unlock-btn");
 const statusEl = document.getElementById("status");
 const downloadContainer = document.getElementById("download-container");
 const encryptionInfo = document.getElementById("encryption-info");
+const passwordRow = document.querySelector(".password-row");
 
 let selectedFile = null;
 
@@ -41,10 +42,20 @@ async function runQpdf(pdfBytes, args) {
   return { exitCode, stdout, stderr, instance };
 }
 
-function renderEncryptionInfo(lines) {
+function renderEncryptionInfo(lines, needsPassword) {
+  passwordRow.classList.remove("visible");
+
+  if (needsPassword) {
+    encryptionInfo.innerHTML =
+      '<span class="value">File is password-protected</span>';
+    encryptionInfo.classList.add("visible");
+    passwordRow.classList.add("visible");
+    return;
+  }
+
   const info = {};
   for (const line of lines) {
-    const match = line.match(/^(.+?):\s*(.+)$/);
+    const match = line.match(/^(.+?)\s*[=:]\s*(.*)$/);
     if (match) info[match[1].trim()] = match[2].trim();
   }
 
@@ -67,11 +78,6 @@ function renderEncryptionInfo(lines) {
     "modify other",
   ];
 
-  let html = "";
-
-  if (info["User password"])
-    html += `<div><span class="label">User password:</span> <span class="value">${info["User password"] === "" ? "(empty)" : "required"}</span></div>`;
-
   const permHtml = permissions
     .filter((p) => info[p])
     .map((p) => {
@@ -81,7 +87,8 @@ function renderEncryptionInfo(lines) {
     })
     .join("<br>");
 
-  if (permHtml) html += `<div style="margin-top:0.25rem">${permHtml}</div>`;
+  let html = "";
+  if (permHtml) html += `<div>${permHtml}</div>`;
 
   encryptionInfo.innerHTML = html;
   encryptionInfo.classList.add("visible");
@@ -90,17 +97,21 @@ function renderEncryptionInfo(lines) {
 async function checkEncryption(file) {
   encryptionInfo.classList.remove("visible");
   encryptionInfo.innerHTML = "";
+  passwordRow.classList.remove("visible");
 
   try {
     setStatus("Checking encryption…", "loading");
     const buffer = await file.arrayBuffer();
     const pdfBytes = new Uint8Array(buffer);
-    const { stdout, stderr } = await runQpdf(pdfBytes, [
+    const { exitCode, stdout, stderr } = await runQpdf(pdfBytes, [
       "--show-encryption",
       "/input.pdf",
     ]);
     const allOutput = [...stdout, ...stderr];
-    renderEncryptionInfo(allOutput);
+    const needsPassword =
+      exitCode !== 0 &&
+      allOutput.some((l) => /password/i.test(l));
+    renderEncryptionInfo(allOutput, needsPassword);
     setStatus("");
   } catch {
     setStatus("");
