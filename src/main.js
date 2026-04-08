@@ -50,6 +50,7 @@ function renderEncryptionInfo(lines, needsPassword) {
       '<span class="value">File is password-protected</span>';
     encryptionInfo.classList.add("visible");
     passwordRow.classList.add("visible");
+    unlockBtn.disabled = false;
     return;
   }
 
@@ -92,6 +93,7 @@ function renderEncryptionInfo(lines, needsPassword) {
 
   encryptionInfo.innerHTML = html;
   encryptionInfo.classList.add("visible");
+  unlockBtn.disabled = false;
 }
 
 async function checkEncryption(file) {
@@ -126,7 +128,7 @@ function setFile(file) {
   selectedFile = file;
   dropZone.innerHTML = `<p class="filename">${file.name}</p><p>${(file.size / 1024).toFixed(1)} KB</p>`;
   dropZone.classList.add("has-file");
-  unlockBtn.disabled = false;
+  unlockBtn.disabled = true;
   downloadContainer.innerHTML = "";
   setStatus("");
   checkEncryption(file);
