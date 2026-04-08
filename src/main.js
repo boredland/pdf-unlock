@@ -17,29 +17,44 @@ function setStatus(text, type = "") {
   statusEl.className = "status " + type;
 }
 
+let captureOutput = null;
+const origLog = console.log;
+const origErr = console.error;
+console.log = (...a) => {
+  if (captureOutput) captureOutput.stdout.push(a.join(" "));
+  else origLog(...a);
+};
+console.error = (...a) => {
+  if (captureOutput) captureOutput.stderr.push(a.join(" "));
+  else origErr(...a);
+};
+
 async function runQpdf(pdfBytes, args) {
-  const stdout = [];
-  const stderr = [];
-  const instance = await createModule({
-    locateFile: () => wasmUrl,
-    print: (text) => stdout.push(text),
-    printErr: (text) => stderr.push(text),
-  });
+  const output = { stdout: [], stderr: [] };
+  captureOutput = output;
 
-  instance.FS.writeFile("/input.pdf", pdfBytes);
-
-  let exitCode;
   try {
-    exitCode = instance.callMain(args);
-  } catch (e) {
-    if (e && typeof e === "object" && "status" in e) {
-      exitCode = e.status;
-    } else {
-      throw e;
-    }
-  }
+    const instance = await createModule({
+      locateFile: () => wasmUrl,
+    });
 
-  return { exitCode, stdout, stderr, instance };
+    instance.FS.writeFile("/input.pdf", pdfBytes);
+
+    let exitCode;
+    try {
+      exitCode = instance.callMain(args);
+    } catch (e) {
+      if (e && typeof e === "object" && "status" in e) {
+        exitCode = e.status;
+      } else {
+        throw e;
+      }
+    }
+
+    return { exitCode, stdout: output.stdout, stderr: output.stderr, instance };
+  } finally {
+    captureOutput = null;
+  }
 }
 
 function renderEncryptionInfo(lines, needsPassword) {
