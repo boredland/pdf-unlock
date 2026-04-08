@@ -7,12 +7,104 @@ const passwordInput = document.getElementById("password");
 const unlockBtn = document.getElementById("unlock-btn");
 const statusEl = document.getElementById("status");
 const downloadContainer = document.getElementById("download-container");
+const encryptionInfo = document.getElementById("encryption-info");
 
 let selectedFile = null;
 
 function setStatus(text, type = "") {
   statusEl.textContent = text;
   statusEl.className = "status " + type;
+}
+
+async function runQpdf(pdfBytes, args) {
+  const stdout = [];
+  const stderr = [];
+  const instance = await createModule({
+    locateFile: () => wasmUrl,
+    print: (text) => stdout.push(text),
+    printErr: (text) => stderr.push(text),
+  });
+
+  instance.FS.writeFile("/input.pdf", pdfBytes);
+
+  let exitCode;
+  try {
+    exitCode = instance.callMain(args);
+  } catch (e) {
+    if (e && typeof e === "object" && "status" in e) {
+      exitCode = e.status;
+    } else {
+      throw e;
+    }
+  }
+
+  return { exitCode, stdout, stderr, instance };
+}
+
+function renderEncryptionInfo(lines) {
+  const info = {};
+  for (const line of lines) {
+    const match = line.match(/^(.+?):\s*(.+)$/);
+    if (match) info[match[1].trim()] = match[2].trim();
+  }
+
+  if (lines.some((l) => l.includes("not encrypted"))) {
+    encryptionInfo.innerHTML =
+      '<span class="not-encrypted">File is not encrypted</span>';
+    encryptionInfo.classList.add("visible");
+    unlockBtn.disabled = true;
+    return;
+  }
+
+  const permissions = [
+    "extract for accessibility",
+    "extract for any purpose",
+    "print low resolution",
+    "print high resolution",
+    "modify document assembly",
+    "modify forms",
+    "modify annotations",
+    "modify other",
+  ];
+
+  let html = "";
+
+  if (info["User password"])
+    html += `<div><span class="label">User password:</span> <span class="value">${info["User password"] === "" ? "(empty)" : "required"}</span></div>`;
+
+  const permHtml = permissions
+    .filter((p) => info[p])
+    .map((p) => {
+      const val = info[p];
+      const cls = val === "allowed" ? "allowed" : "restricted";
+      return `<span class="label">${p}:</span> <span class="${cls}">${val}</span>`;
+    })
+    .join("<br>");
+
+  if (permHtml) html += `<div style="margin-top:0.25rem">${permHtml}</div>`;
+
+  encryptionInfo.innerHTML = html;
+  encryptionInfo.classList.add("visible");
+}
+
+async function checkEncryption(file) {
+  encryptionInfo.classList.remove("visible");
+  encryptionInfo.innerHTML = "";
+
+  try {
+    setStatus("Checking encryption…", "loading");
+    const buffer = await file.arrayBuffer();
+    const pdfBytes = new Uint8Array(buffer);
+    const { stdout, stderr } = await runQpdf(pdfBytes, [
+      "--show-encryption",
+      "/input.pdf",
+    ]);
+    const allOutput = [...stdout, ...stderr];
+    renderEncryptionInfo(allOutput);
+    setStatus("");
+  } catch {
+    setStatus("");
+  }
 }
 
 function setFile(file) {
@@ -26,6 +118,7 @@ function setFile(file) {
   unlockBtn.disabled = false;
   downloadContainer.innerHTML = "";
   setStatus("");
+  checkEncryption(file);
 }
 
 dropZone.addEventListener("click", () => fileInput.click());
@@ -58,17 +151,8 @@ unlockBtn.addEventListener("click", async () => {
   setStatus("Loading WASM engine…", "loading");
 
   try {
-    const errors = [];
-    const instance = await createModule({
-      locateFile: () => wasmUrl,
-      print: () => {},
-      printErr: (text) => errors.push(text),
-    });
-
-    setStatus("Decrypting…", "loading");
-
     const buffer = await selectedFile.arrayBuffer();
-    instance.FS.writeFile("/input.pdf", new Uint8Array(buffer));
+    const pdfBytes = new Uint8Array(buffer);
 
     const args = ["--decrypt", "/input.pdf", "/output.pdf"];
     const password = passwordInput.value;
@@ -76,19 +160,11 @@ unlockBtn.addEventListener("click", async () => {
       args.unshift("--password=" + password);
     }
 
-    let exitCode;
-    try {
-      exitCode = instance.callMain(args);
-    } catch (e) {
-      if (e && typeof e === "object" && "status" in e) {
-        exitCode = e.status;
-      } else {
-        throw e;
-      }
-    }
+    setStatus("Decrypting…", "loading");
+    const { exitCode, stderr, instance } = await runQpdf(pdfBytes, args);
 
     if (exitCode !== 0) {
-      const msg = errors.join("\n").trim();
+      const msg = stderr.join("\n").trim();
       throw new Error(msg || `qpdf exited with code ${exitCode}`);
     }
 

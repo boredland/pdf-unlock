@@ -165,6 +165,42 @@
         color: #86868b;
       }
 
+      .encryption-info {
+        background: #f5f5f7;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        font-size: 0.8rem;
+        line-height: 1.6;
+        display: none;
+      }
+
+      .encryption-info.visible {
+        display: block;
+      }
+
+      .encryption-info .label {
+        color: #86868b;
+      }
+
+      .encryption-info .value {
+        color: #1d1d1f;
+        font-weight: 500;
+      }
+
+      .encryption-info .not-encrypted {
+        color: #34c759;
+        font-weight: 500;
+      }
+
+      .encryption-info .restricted {
+        color: #ff3b30;
+      }
+
+      .encryption-info .allowed {
+        color: #34c759;
+      }
+
       .privacy {
         margin-top: 1.25rem;
         padding-top: 1rem;
@@ -201,6 +237,8 @@
         class="file-input"
         id="file-input"
       />
+
+      <div class="encryption-info" id="encryption-info"></div>
 
       <div class="password-row">
         <label for="password"
