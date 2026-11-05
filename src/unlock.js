@@ -1,186 +1,209 @@
-/**
- * unlock.js
- *
- * The core business logic: inspecting a PDF's encryption and removing it.
- *
- * Two-step flow per file:
- *  1. `checkAndUnlock()` runs `qpdf --show-encryption` to learn whether the file is
- *     encrypted, whether a user password is required, and which permissions are set.
- *     Owner-password-only files (restricted permissions) are decrypted immediately.
- *  2. `decrypt()` runs `qpdf --decrypt` and turns `/output.pdf` into a Blob download URL.
- *
- * Both steps are always executed through the serial job queue (see `queue.js`) so the
- * shared wasm instance is never re-entered.
- */
-
-import { state } from "./state.js";
 import { runQpdf } from "./qpdf.js";
-import { render } from "./render.js";
-import { clearDownload, triggerDownload } from "./download.js";
-import { passwordInput } from "./dom.js";
-import { enqueue } from "./queue.js";
+import { render, passwordInput } from "./render.js";
+import { state } from "./state.js";
+
+function enqueue(task) {
+  state.queue.push(task);
+  pump();
+}
+
+async function pump() {
+  if (state.processing) return;
+  state.processing = true;
+  render();
+  while (state.queue.length > 0) {
+    try {
+      await state.queue.shift()();
+    } catch (err) {
+      // One broken file must not stall the rest of the batch.
+      console.error(err);
+    }
+  }
+  state.processing = false;
+  render();
+}
 
 /**
- * Inspect one entry and, when possible, unlock it without user input.
- *
- * Leaves the entry in one of the terminal states:
- * - `"unencrypted"` — the PDF is not protected at all,
- * - `"password"`    — a user password is required before decrypting,
- * - otherwise `decrypt()` is called with an empty password (owner-password case),
- * - `"error"`       — the file could not be read or inspected.
- *
- * @param {import("./state.js").Entry} entry Entry created by `addFiles()`.
- * @returns {Promise<void>} Resolves once the entry reached a terminal state.
+ * @param {FileList|File[]} files
  */
-export async function checkAndUnlock(entry) {
-  // Show an immediate "we are on it" state in the row.
-  entry.status = "checking";
-  entry.detail = "Checking…";
-  // Reset any permissions left over from a previous attempt.
-  entry.permissions = {};
-  // Paint the row before the awaited wasm work starts.
-  render();
+export function addFiles(files) {
+  const added = [];
+  let nonPdf = 0;
+  let duplicates = 0;
+  for (const file of files) {
+    // Some systems report an empty MIME type, so the extension counts too.
+    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+      nonPdf++;
+      continue;
+    }
+    // Name + size is the only identity a File offers without reading it.
+    if (
+      state.entries.some(
+        (e) => e.file.name === file.name && e.file.size === file.size,
+      )
+    ) {
+      duplicates++;
+      continue;
+    }
+    const entry = {
+      id: state.nextId++,
+      file,
+      bytes: null,
+      status: "checking",
+      detail: "Queued…",
+      permissions: {},
+      downloadUrl: null,
+      outName: "",
+    };
+    state.entries.push(entry);
+    added.push(entry);
+  }
 
-  // Collected qpdf console output for this file.
-  let lines;
+  state.notice = skippedNotice(nonPdf, duplicates);
+  render();
+  for (const entry of added) enqueue(() => checkAndUnlock(entry));
+}
+
+function skippedNotice(nonPdf, duplicates) {
+  const parts = [];
+  if (nonPdf) parts.push(`${nonPdf} non-PDF file${nonPdf > 1 ? "s" : ""}`);
+  if (duplicates) {
+    parts.push(
+      `${duplicates} file${duplicates > 1 ? "s" : ""} already in the list`,
+    );
+  }
+  return parts.length ? `Skipped ${parts.join(" and ")}.` : "";
+}
+
+export function removeEntry(id) {
+  const index = state.entries.findIndex((e) => e.id === id);
+  if (index === -1) return;
+  const [entry] = state.entries.splice(index, 1);
+  clearDownload(entry);
+  render();
+}
+
+function finish(entry, status, detail) {
+  entry.status = status;
+  entry.detail = detail;
+  if (status !== "password") entry.bytes = null;
+  render();
+}
+
+async function checkAndUnlock(entry) {
+  entry.detail = "Checking…";
+  render();
   try {
-    // Read the file into memory exactly once; reused by the later decrypt run.
     entry.bytes = new Uint8Array(await entry.file.arrayBuffer());
-    // Ask qpdf about the file's encryption state (never modifies it).
-    const result = await runQpdf(entry.bytes, [
+    const { exitCode, lines } = await runQpdf(entry.bytes, [
       "--show-encryption",
       "/input.pdf",
     ]);
-    // Keep the captured output for the checks below.
-    lines = result.lines;
-
-    // A non-zero exit plus a password hint means a user password is needed.
-    if (result.exitCode !== 0 && lines.some((l) => /password/i.test(l))) {
-      entry.status = "password";
-      entry.detail = "Password-protected";
-      render();
-      // Wait for the user to supply the password via `unlockWithPassword()`.
+    if (exitCode !== 0 && lines.some((l) => /password/i.test(l))) {
+      finish(entry, "password", "Password-protected");
       return;
     }
-
-    // qpdf explicitly reports files that carry no encryption at all.
     if (lines.some((l) => l.includes("not encrypted"))) {
-      entry.status = "unencrypted";
-      entry.detail = "Not encrypted — nothing to do";
-      render();
-      // Nothing else to do for this file.
+      // Decrypting would only produce a rewritten copy of an already open file.
+      finish(entry, "unencrypted", "Not encrypted — nothing to do");
       return;
     }
-
-    // Parse the `key: value` / `key = value` permission lines into a lookup object,
-    // which `render()` then displays as allowed/restricted rows.
     entry.permissions = Object.fromEntries(
       lines
-        // Split each line into its key and value halves.
         .map((l) => l.match(/^(.+?)\s*[=:]\s*(.*)$/))
-        // Drop lines that do not follow the pattern (headers, blank lines, …).
         .filter(Boolean)
-        // Normalise whitespace around key and value.
         .map((m) => [m[1].trim(), m[2].trim()]),
     );
   } catch (err) {
-    // Reading the file or booting wasm failed — report it on the row.
-    entry.status = "error";
-    entry.detail = err.message || "Could not read file";
-    render();
+    finish(entry, "error", err.message || "Could not read file");
     return;
   }
-
-  // Encrypted without a user password: unlock it straight away.
+  // Only an owner password is set; it restricts permissions but qpdf can drop it.
   await decrypt(entry, "");
 }
 
-/**
- * Decrypt an entry with `qpdf --decrypt` and expose the result as a download.
- *
- * On success the entry becomes downloadable and is queued for auto-download. On failure
- * it falls back to `"password"` when a password was supplied (i.e. the password was
- * wrong) or to `"error"` for the automatic (empty password) case.
- *
- * @param {import("./state.js").Entry} entry Entry whose `bytes` were already read.
- * @param {string} password User password, or `""` to attempt the owner-password unlock.
- * @returns {Promise<void>} Resolves after the entry was updated and re-rendered.
- */
-export async function decrypt(entry, password) {
-  // Reflect the running step in the row.
-  entry.detail = "Decrypting…";
+async function decrypt(entry, password) {
   entry.status = "checking";
+  entry.detail = "Decrypting…";
   render();
 
+  const args = ["--decrypt", "/input.pdf", "/output.pdf"];
+  if (password) args.unshift("--password=" + password);
+
+  let output;
   try {
-    // Materialise the decrypted copy at `/output.pdf` inside the wasm file system.
-    const args = ["--decrypt", "/input.pdf", "/output.pdf"];
-    // qpdf wants the password as an option *before* the positional arguments.
-    if (password) args.unshift("--password=" + password);
-
-    // Run qpdf and grab the output file system back for reading `/output.pdf`.
     const { exitCode, lines, instance } = await runQpdf(entry.bytes, args);
-
-    // Exit code 3 is a warning for qpdf (e.g. recovered damage) and still writes a file.
+    // Exit code 3 means qpdf recovered from warnings and still wrote the file.
     if (exitCode !== 0 && exitCode !== 3) {
-      // Prefer qpdf's own message over the bare exit code.
-      throw new Error(
-        lines.join("\n").trim() || `qpdf exited with code ${exitCode}`,
-      );
+      throw new Error(qpdfError(lines, exitCode));
     }
-
-    // Read the produced bytes out of the virtual file system.
-    const output = instance.FS.readFile("/output.pdf");
-    // An empty result means the run silently failed; treat it as an error.
-    if (!output || output.length === 0) {
-      throw new Error("qpdf produced an empty file");
-    }
-
-    // Release a previous download for this entry, if the user retried.
-    clearDownload(entry);
-    // `<name>_unlocked.pdf` keeps the original name recognisable.
-    entry.outName = entry.file.name.replace(/\.pdf$/i, "") + "_unlocked.pdf";
-    // Wrap the bytes in a Blob and expose them through an object URL.
-    entry.downloadUrl = URL.createObjectURL(
-      new Blob([output], { type: "application/pdf" }),
-    );
-    // Mark the entry as finished.
-    entry.status = "unlocked";
-    entry.detail = "Unlocked";
-    // Auto-download is triggered after the next render pass.
-    state.autoDownloads.push(entry);
+    output = instance.FS.readFile("/output.pdf");
+    if (output.length === 0) throw new Error("qpdf produced an empty file");
   } catch (err) {
-    // A supplied password that fails means "wrong password" → ask again.
-    // Without a password the failure is final → error state.
-    entry.status = password ? "password" : "error";
-    entry.detail = err.message || "Decryption failed";
+    // With a typed password the file stays retryable; the automatic attempt is final.
+    finish(
+      entry,
+      password ? "password" : "error",
+      err.message || "Decryption failed",
+    );
+    return;
   }
 
-  // Repaint so the new status/download link are visible.
-  render();
-
-  // Download outside the render pass so the link also exists in the list.
-  // `splice(0)` empties the buffer and returns the pending entries in one step.
-  for (const done of state.autoDownloads.splice(0)) triggerDownload(done);
+  clearDownload(entry);
+  entry.outName = entry.file.name.replace(/\.pdf$/i, "") + "_unlocked.pdf";
+  entry.downloadUrl = URL.createObjectURL(
+    new Blob([output], { type: "application/pdf" }),
+  );
+  finish(entry, "unlocked", "Unlocked");
+  triggerDownload(entry);
 }
 
-/**
- * Apply the password typed in the UI to every entry that is waiting for one.
- *
- * Bound to the unlock button and to the Enter key in the password field. Each file is
- * enqueued separately so a wrong password does not block the others.
- *
- * @returns {void}
- */
+function qpdfError(lines, exitCode) {
+  if (lines.some((l) => /invalid password/i.test(l))) return "Wrong password";
+  // qpdf prefixes messages with the wasm program name and the virtual input path.
+  const message = lines
+    .map((l) => l.replace(/^this\.program: (\/input\.pdf: )?/, "").trim())
+    .filter(Boolean)
+    .join("\n");
+  return message || `qpdf exited with code ${exitCode}`;
+}
+
 export function unlockWithPassword() {
-  // Only entries blocked on a password are affected.
-  const pending = state.entries.filter((e) => e.status === "password");
-  // Nothing pending (e.g. stale click): do nothing.
-  if (pending.length === 0) return;
-  // Read the current field value; the field is not cleared so retries are quick.
   const password = passwordInput.value;
+  // An empty attempt can only fail and would turn the files into errors.
+  if (!password) return;
+  const pending = state.entries.filter((e) => e.status === "password");
+  if (pending.length === 0) return;
+
+  // Leave the "password" state before queueing so a repeated submit while the queue is
+  // busy cannot decrypt (and download) the same file twice.
   for (const entry of pending) {
-    // Queue one decrypt run per protected file.
-    enqueue(() => decrypt(entry, password));
+    entry.status = "checking";
+    entry.detail = "Queued…";
   }
+  render();
+  for (const entry of pending) enqueue(() => decrypt(entry, password));
+  enqueue(() => {
+    // Keep the password for a retry; drop it once no file needs it any more.
+    if (!state.entries.some((e) => e.status === "password")) {
+      passwordInput.value = "";
+    }
+  });
+}
+
+function triggerDownload(entry) {
+  const link = document.createElement("a");
+  link.href = entry.downloadUrl;
+  link.download = entry.outName;
+  // Some browsers ignore programmatic clicks on detached anchors.
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function clearDownload(entry) {
+  if (!entry.downloadUrl) return;
+  // Object URLs pin their Blob in memory until revoked.
+  URL.revokeObjectURL(entry.downloadUrl);
+  entry.downloadUrl = null;
 }

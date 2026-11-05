@@ -341,37 +341,6 @@
         color: var(--muted);
       }
 
-      .encryption-info {
-        background: var(--info-bg);
-        border-radius: 8px;
-        padding: 0.75rem 1rem;
-        margin-bottom: 1rem;
-        font-size: 0.8rem;
-        line-height: 1.6;
-      }
-
-      .encryption-info .label {
-        color: var(--muted);
-      }
-
-      .encryption-info .value {
-        color: var(--text);
-        font-weight: 500;
-      }
-
-      .encryption-info .not-encrypted {
-        color: var(--green);
-        font-weight: 500;
-      }
-
-      .encryption-info .restricted {
-        color: var(--red);
-      }
-
-      .encryption-info .allowed {
-        color: var(--green);
-      }
-
       .hint {
         margin-top: 0.75rem;
         font-size: 0.75rem;
@@ -456,6 +425,7 @@
       <button class="btn btn-primary" id="unlock-btn" hidden>Unlock</button>
 
       <div class="status" id="status"></div>
+      <div class="status error" id="notice" hidden></div>
       <div id="download-container"></div>
 
       <p class="hint" id="download-hint" hidden>
