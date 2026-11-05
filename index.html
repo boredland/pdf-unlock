@@ -129,7 +129,7 @@
         padding: 2rem 1rem;
         text-align: center;
         cursor: pointer;
-        transition: border-color 0.2s, background 0.2s;
+        transition: border-color 0.2s, background 0.2s, padding 0.2s;
         margin-bottom: 1rem;
       }
 
@@ -140,8 +140,19 @@
       }
 
       .drop-zone.has-file {
+        padding: 1rem;
         border-color: var(--green);
         background: var(--drop-file-bg);
+      }
+
+      .drop-zone.has-file:hover,
+      .drop-zone.has-file.dragover {
+        border-color: var(--accent);
+        background: var(--drop-hover-bg);
+      }
+
+      .drop-zone.has-file p {
+        font-size: 0.8rem;
       }
 
       .drop-zone p {
@@ -149,10 +160,97 @@
         font-size: 0.9rem;
       }
 
-      .drop-zone .filename {
+      .file-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+
+      .file-list[hidden] {
+        display: none;
+      }
+
+      .file-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        background: var(--info-bg);
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+      }
+
+      .file-main {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .file-name {
         color: var(--text);
         font-weight: 500;
+        font-size: 0.85rem;
         word-break: break-all;
+      }
+
+      .file-meta {
+        color: var(--muted);
+        font-size: 0.75rem;
+        margin-top: 0.15rem;
+      }
+
+      .file-status.password {
+        color: var(--red);
+      }
+
+      .file-status.unencrypted {
+        color: var(--green);
+      }
+
+      .file-status.error {
+        color: var(--red);
+      }
+
+      .file-permissions {
+        margin-top: 0.4rem;
+        font-size: 0.72rem;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .file-permissions .label {
+        color: var(--muted);
+      }
+
+      .file-permissions .allowed {
+        color: var(--green);
+      }
+
+      .file-permissions .restricted {
+        color: var(--red);
+      }
+
+      .file-remove {
+        flex: none;
+        width: 1.5rem;
+        height: 1.5rem;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--muted);
+        font-size: 1.15rem;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 0.2s, color 0.2s;
+      }
+
+      .file-remove:hover:not(:disabled) {
+        background: var(--divider);
+        color: var(--text);
+      }
+
+      .file-remove:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
       }
 
       .file-input {
@@ -243,35 +341,16 @@
         color: var(--muted);
       }
 
-      .encryption-info {
-        background: var(--info-bg);
-        border-radius: 8px;
-        padding: 0.75rem 1rem;
-        margin-bottom: 1rem;
-        font-size: 0.8rem;
-        line-height: 1.6;
-      }
-
-      .encryption-info .label {
+      .hint {
+        margin-top: 0.75rem;
+        font-size: 0.75rem;
         color: var(--muted);
+        text-align: center;
+        line-height: 1.5;
       }
 
-      .encryption-info .value {
-        color: var(--text);
-        font-weight: 500;
-      }
-
-      .encryption-info .not-encrypted {
-        color: var(--green);
-        font-weight: 500;
-      }
-
-      .encryption-info .restricted {
-        color: var(--red);
-      }
-
-      .encryption-info .allowed {
-        color: var(--green);
+      .hint[hidden] {
+        display: none;
       }
 
       .privacy {
@@ -319,31 +398,40 @@
       </svg>
     </a>
 
-    <div class="card">
+    <div class="card" id="card">
       <h1>PDF Unlock</h1>
-      <p class="subtitle">Remove password protection from PDF files</p>
+      <p class="subtitle">
+        Drop PDFs to remove their protection — unlocked automatically
+      </p>
 
       <div class="drop-zone" id="drop-zone">
-        <p>Drop a PDF here or click to select</p>
+        <p id="drop-hint">Drop PDFs here or click to select</p>
       </div>
       <input
         type="file"
         accept=".pdf,application/pdf"
         class="file-input"
         id="file-input"
+        multiple
       />
 
-      <div class="encryption-info" id="encryption-info" hidden></div>
+      <div class="file-list" id="file-list" hidden></div>
 
       <div class="password-row" hidden>
         <label for="password">Password</label>
         <input type="password" id="password" />
       </div>
 
-      <button class="btn btn-primary" id="unlock-btn" disabled>Unlock</button>
+      <button class="btn btn-primary" id="unlock-btn" hidden>Unlock</button>
 
       <div class="status" id="status"></div>
+      <div class="status error" id="notice" hidden></div>
       <div id="download-container"></div>
+
+      <p class="hint" id="download-hint" hidden>
+        Unlocked files download automatically. If your browser blocks the
+        download, use the link above.
+      </p>
 
       <div class="privacy">
         Your files never leave your device. All processing runs locally in your
