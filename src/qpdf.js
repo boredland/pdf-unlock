@@ -29,17 +29,42 @@ function getInstance() {
  * Run qpdf against `bytes` mounted at /input.pdf.
  *
  * Callers must serialise runs: the instance and its /input.pdf and /output.pdf paths are
- * shared, and both are removed first so a failed run can never yield a stale output.
+ * shared. Both are removed after every run so a failed run never yields a stale output
+ * and the last file does not stay resident in the wasm heap.
  *
  * @param {Uint8Array} bytes
  * @param {string[]} args
- * @returns {Promise<{exitCode: number, lines: string[], instance: any}>}
+ * @returns {Promise<{exitCode: number, lines: string[], output: Uint8Array|null}>}
+ *   `output` is the content of /output.pdf, or null when qpdf did not write one.
  */
 export async function runQpdf(bytes, args) {
+  const instance = await getInstance();
   const lines = [];
-  capturedLines = lines;
+  let exitCode;
+  let output = null;
   try {
-    const instance = await getInstance();
+    instance.FS.writeFile("/input.pdf", bytes);
+    // callMain is synchronous, so capturing only around it keeps unrelated page logs
+    // (e.g. emitted while the wasm was still loading) out of qpdf's output.
+    capturedLines = lines;
+    try {
+      exitCode = instance.callMain(args);
+    } catch (e) {
+      if (typeof e?.status !== "number") {
+        // A trap or abort (not an ExitStatus) leaves the runtime unusable; start the next
+        // file on a fresh instance instead of failing every remaining one.
+        instancePromise = null;
+      }
+      exitCode = e?.status ?? -1;
+    } finally {
+      capturedLines = null;
+    }
+    try {
+      output = instance.FS.readFile("/output.pdf");
+    } catch {
+      // qpdf wrote no output
+    }
+  } finally {
     for (const path of ["/input.pdf", "/output.pdf"]) {
       try {
         instance.FS.unlink(path);
@@ -47,16 +72,6 @@ export async function runQpdf(bytes, args) {
         // not present
       }
     }
-    instance.FS.writeFile("/input.pdf", bytes);
-    let exitCode;
-    try {
-      exitCode = instance.callMain(args);
-    } catch (e) {
-      // Emscripten reports a non-zero exit by throwing an ExitStatus.
-      exitCode = e?.status ?? -1;
-    }
-    return { exitCode, lines, instance };
-  } finally {
-    capturedLines = null;
   }
+  return { exitCode, lines, output };
 }

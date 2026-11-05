@@ -64,6 +64,9 @@ export function render() {
     (e) => e.status === "password",
   ).length;
   passwordRow.hidden = needsPassword === 0;
+  // The submitted password is already captured by the queued attempts; nothing else
+  // should keep it once the field is out of sight.
+  if (needsPassword === 0) passwordInput.value = "";
   unlockBtn.hidden = needsPassword === 0;
   passwordLabel.textContent =
     needsPassword > 1
